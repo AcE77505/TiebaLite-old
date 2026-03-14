@@ -25,6 +25,7 @@ import com.huanchengfly.tieba.post.backup.BackupData
 import com.huanchengfly.tieba.post.backup.imageKeyOrUrl
 import com.huanchengfly.tieba.post.navigateDebounced
 import com.huanchengfly.tieba.post.ui.page.Destination
+import com.huanchengfly.tieba.post.ui.page.ProvideNavigator
 import com.huanchengfly.tieba.post.ui.page.thread.PostCard
 import com.huanchengfly.tieba.post.ui.widgets.compose.Avatar
 import com.huanchengfly.tieba.post.ui.widgets.compose.BackNavigationIcon
@@ -41,44 +42,46 @@ fun BackupViewerPage(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
-    MyScaffold(
-        topBar = {
-            TitleCentredToolbar(
-                title = uiState.backup?.title
-                    ?: stringResource(id = R.string.title_backup_management),
-                navigationIcon = {
-                    BackNavigationIcon(onBackPressed = navigator::navigateUp)
-                },
-            )
-        },
-    ) { contentPadding ->
-        StateScreen(
-            isEmpty = uiState.backup == null && !uiState.isLoading,
-            isLoading = uiState.isLoading,
-            error = uiState.error,
-            onReload = viewModel::loadBackup,
-            screenPadding = contentPadding,
-        ) {
-            val backup = uiState.backup ?: return@StateScreen
-            val postData = uiState.postData ?: return@StateScreen
-
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = contentPadding,
+    ProvideNavigator(navigator = navigator) {
+        MyScaffold(
+            topBar = {
+                TitleCentredToolbar(
+                    title = uiState.backup?.title
+                        ?: stringResource(id = R.string.title_backup_management),
+                    navigationIcon = {
+                        BackNavigationIcon(onBackPressed = navigator::navigateUp)
+                    },
+                )
+            },
+        ) { contentPadding ->
+            StateScreen(
+                isEmpty = uiState.backup == null && !uiState.isLoading,
+                isLoading = uiState.isLoading,
+                error = uiState.error,
+                onReload = viewModel::loadBackup,
+                screenPadding = contentPadding,
             ) {
-                item {
-                    BackupForumHeader(backup = backup, imagesDir = uiState.imagesDir)
-                    HorizontalDivider(
-                        thickness = 2.dp,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 0.dp),
-                    )
-                }
+                val backup = uiState.backup ?: return@StateScreen
+                val postData = uiState.postData ?: return@StateScreen
 
-                item {
-                    PostCard(
-                        post = postData,
-                        onMenuCopyClick = { navigator.navigateDebounced(Destination.CopyText(it)) },
-                    )
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = contentPadding,
+                ) {
+                    item {
+                        BackupForumHeader(backup = backup, imagesDir = uiState.imagesDir)
+                        HorizontalDivider(
+                            thickness = 2.dp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 0.dp),
+                        )
+                    }
+
+                    item {
+                        PostCard(
+                            post = postData,
+                            onMenuCopyClick = { navigator.navigateDebounced(Destination.CopyText(it)) },
+                        )
+                    }
                 }
             }
         }
