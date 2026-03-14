@@ -1,7 +1,6 @@
 package com.huanchengfly.tieba.post.utils
 
 import android.content.Context
-import androidx.annotation.StringRes
 import com.huanchengfly.tieba.post.R
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -24,7 +23,6 @@ object DateTimeUtils {
     fun getRelativeTimeString(
         context: Context,
         timestamp: Long,
-        @StringRes minuteStringRes: Int = R.string.relative_date_minute,
     ): String {
         val calendar = Calendar.getInstance().apply {
             timeInMillis = fixTimestamp(timestamp)
@@ -47,7 +45,7 @@ object DateTimeUtils {
                             }
                         } else {
                             context.getString(
-                                minuteStringRes,
+                                R.string.relative_date_minute,
                                 currentCalendar.get(Calendar.MINUTE) - calendar.get(Calendar.MINUTE)
                             )
                         }
@@ -66,6 +64,15 @@ object DateTimeUtils {
         } else {
             calendar.format(context.getString(R.string.relative_date_after))
         }
+    }
+
+    /**
+     * Returns a backup-context time string: same as [getRelativeTimeString] but with "备份"
+     * appended to every possible format (e.g. "今天 21:15备份", "5 分钟前备份", "刚刚备份").
+     */
+    fun getBackupRelativeTimeString(context: Context, timestamp: Long): String {
+        return getRelativeTimeString(context, timestamp) +
+                context.getString(R.string.relative_date_backup_suffix)
     }
 
     fun getRelativeDayString(context: Context, timestamp: Long): String {
