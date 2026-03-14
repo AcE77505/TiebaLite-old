@@ -3,6 +3,7 @@ package com.huanchengfly.tieba.post.backup
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -28,6 +29,11 @@ private val Context.backupDataStore by preferencesDataStore(name = "backup_prefs
 
 private val BACKUP_URI_KEY = stringPreferencesKey("backup_uri")
 private val BACKUP_REPLY_INTERVAL_KEY = longPreferencesKey("backup_reply_interval")
+private val AUTO_BACKUP_OWN_POSTS_KEY = booleanPreferencesKey("auto_backup_own_posts")
+private val DUPLICATE_BACKUP_ACTION_KEY = stringPreferencesKey("duplicate_backup_action")
+
+/** How to handle saving a backup when one already exists for the same thread. */
+enum class DuplicateBackupAction { OVERWRITE, KEEP_BOTH, ASK }
 
 @Singleton
 class BackupRepository @Inject constructor(
@@ -48,6 +54,18 @@ class BackupRepository @Inject constructor(
     val replyFetchInterval: Flow<Long> = context.backupDataStore.data
         .map { prefs -> prefs[BACKUP_REPLY_INTERVAL_KEY] ?: DEFAULT_REPLY_FETCH_INTERVAL }
 
+    /** Flow of whether to automatically backup own posts when their reply count changes. */
+    val autoBackupOwnPosts: Flow<Boolean> = context.backupDataStore.data
+        .map { prefs -> prefs[AUTO_BACKUP_OWN_POSTS_KEY] ?: false }
+
+    /** Flow of the action to take when a backup already exists for the same thread. */
+    val duplicateBackupAction: Flow<DuplicateBackupAction> = context.backupDataStore.data
+        .map { prefs ->
+            DuplicateBackupAction.entries.firstOrNull {
+                it.name == prefs[DUPLICATE_BACKUP_ACTION_KEY]
+            } ?: DuplicateBackupAction.ASK
+        }
+
     /** Persist the backup directory URI and request persistent permissions. */
     suspend fun setBackupUri(uri: Uri) {
         context.contentResolver.takePersistableUriPermission(
@@ -64,41 +82,103 @@ class BackupRepository @Inject constructor(
         context.backupDataStore.edit { it[BACKUP_REPLY_INTERVAL_KEY] = interval }
     }
 
+    /** Persist the auto-backup-own-posts setting. */
+    suspend fun setAutoBackupOwnPosts(enabled: Boolean) {
+        context.backupDataStore.edit { it[AUTO_BACKUP_OWN_POSTS_KEY] = enabled }
+    }
+
+    /** Persist the duplicate backup action. */
+    suspend fun setDuplicateBackupAction(action: DuplicateBackupAction) {
+        context.backupDataStore.edit { it[DUPLICATE_BACKUP_ACTION_KEY] = action.name }
+    }
+
     /**
-     * Check whether a backup with [threadId] already exists (exact filename `{threadId}.json`).
+     * Check whether any backup for [threadId] already exists.
+     * Handles both the legacy `{threadId}.json` / `{threadId}_{ts}.json` naming and the
+     * new `{threadId}_m{replyNum}[_{n}].json` / `{threadId}[_{n}].json` naming.
      */
     suspend fun checkExists(threadId: Long): Boolean = withContext(Dispatchers.IO) {
         val treeUri = backupUri.first() ?: return@withContext false
-        findDocumentUri(treeUri, "${threadId}.json") != null
+        val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+        context.contentResolver.query(
+            childrenUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(0)
+                if (name.endsWith(".json") && isBackupFileForThread(name, threadId)) {
+                    return@withContext true
+                }
+            }
+        }
+        false
     }
 
     /**
      * Save a full backup (JSON + image ZIP) to the user-chosen SAF directory.
      *
-     * This function downloads all images, packs them into a ZIP file named `{baseName}.zip`,
-     * and writes the updated [BackupData] as `{baseName}.json` — where `baseName` is
-     * `{threadId}` for a new backup and `{threadId}_{backupTime}` when [keepBoth] is true.
+     * **File naming:**
+     * - Own post (isOwnPost=true): base name is `{threadId}_m{replyNum}`
+     * - Other post: base name is `{threadId}`
      *
-     * @param overwrite Replace the existing `{threadId}.json` and `{threadId}.zip`.
-     * @param keepBoth  Create timestamped files alongside the existing ones.
+     * When [keepBoth] is true and the primary file `{baseName}.json` already exists, the new
+     * file is named `{baseName}_2.json`, `{baseName}_3.json`, … (incrementing until a free slot
+     * is found). No timestamp suffix is used.
      *
-     * When neither [overwrite] nor [keepBoth] is true the function does nothing.
-     * Returns true on success, false when no backup directory is configured.
+     * @param overwrite  Replace the existing primary file (`{baseName}.json`).
+     * @param keepBoth   Keep the existing file and create a numerically-suffixed duplicate.
+     * @param isOwnPost  When true the base name includes `_m{replyNum}`.
+     *
+     * When neither [overwrite] nor [keepBoth] is true and the primary file exists, the function
+     * does nothing (user cancelled). Returns true on success, false when no backup directory is
+     * configured.
      */
     suspend fun saveBackup(
         data: BackupData,
         overwrite: Boolean = false,
         keepBoth: Boolean = false,
+        isOwnPost: Boolean = false,
     ): Boolean = withContext(Dispatchers.IO) {
         val treeUri = backupUri.first() ?: return@withContext false
         val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
 
-        val suffix = if (keepBoth) "_${data.backupTime}" else ""
-        val baseName = "${data.threadId}$suffix"
+        // Determine base name based on whether this is an own post.
+        val baseName = if (isOwnPost) "${data.threadId}_m${data.replyNum}" else "${data.threadId}"
 
-        // For the non-keepBoth case, look up existing files to overwrite.
-        val existingJsonUri = if (suffix.isEmpty()) findDocumentUri(treeUri, "$baseName.json") else null
-        val existingZipUri  = if (suffix.isEmpty()) findDocumentUri(treeUri, "$baseName.zip")  else null
+        // Look up existing primary files.
+        val existingJsonUri = findDocumentUri(treeUri, "$baseName.json")
+        val existingZipUri  = findDocumentUri(treeUri, "$baseName.zip")
+
+        // Determine actual target base name and whether to overwrite an existing URI.
+        val targetBaseName: String
+        val targetJsonUri: Uri?
+        val targetZipUri: Uri?
+
+        when {
+            existingJsonUri == null -> {
+                // New backup: no existing file with this base name.
+                targetBaseName = baseName
+                targetJsonUri = null
+                targetZipUri = null
+            }
+            overwrite -> {
+                // Overwrite existing primary files.
+                targetBaseName = baseName
+                targetJsonUri = existingJsonUri
+                targetZipUri = existingZipUri
+            }
+            keepBoth -> {
+                // Keep both: find the next available numeric suffix (_2, _3, …).
+                var n = 2
+                while (findDocumentUri(treeUri, "${baseName}_$n.json") != null) n++
+                targetBaseName = "${baseName}_$n"
+                targetJsonUri = null
+                targetZipUri = null
+            }
+            else -> return@withContext true  // Cancel: do nothing but report success.
+        }
 
         // 1. Download images and build the ZIP in memory.
         val (dataWithKeys, zipBytes) = downloadAndBuildZip(data)
@@ -106,11 +186,11 @@ class BackupRepository @Inject constructor(
         // 2. Write ZIP (only if there are images to store).
         if (zipBytes != null) {
             when {
-                existingZipUri != null && overwrite ->
-                    context.contentResolver.openOutputStream(existingZipUri, "wt")
+                targetZipUri != null ->
+                    context.contentResolver.openOutputStream(targetZipUri, "wt")
                         ?.use { it.write(zipBytes) }
                 else ->
-                    createAndWriteDoc(treeUri, treeDocId, "$baseName.zip", "application/zip", zipBytes)
+                    createAndWriteDoc(treeUri, treeDocId, "$targetBaseName.zip", "application/zip", zipBytes)
             }
         }
 
@@ -118,14 +198,11 @@ class BackupRepository @Inject constructor(
         val jsonBytes = json.encodeToString(BackupData.serializer(), dataWithKeys)
             .toByteArray(Charsets.UTF_8)
         when {
-            existingJsonUri == null ->
-                createAndWriteDoc(treeUri, treeDocId, "$baseName.json", "application/json", jsonBytes)
-            overwrite ->
-                context.contentResolver.openOutputStream(existingJsonUri, "wt")
+            targetJsonUri != null ->
+                context.contentResolver.openOutputStream(targetJsonUri, "wt")
                     ?.use { it.write(jsonBytes) }
-            keepBoth ->
-                createAndWriteDoc(treeUri, treeDocId, "$baseName.json", "application/json", jsonBytes)
-            // else: user cancelled – do nothing
+            else ->
+                createAndWriteDoc(treeUri, treeDocId, "$targetBaseName.json", "application/json", jsonBytes)
         }
         true
     }
@@ -168,8 +245,10 @@ class BackupRepository @Inject constructor(
 
     /**
      * Delete a backup identified by [threadId] and [backupTime].
-     * Removes both the JSON file and its companion ZIP (same base name).
-     * Also cleans up any leftover private cache/files for this thread.
+     * Locates the correct file by scanning all `{threadId}*.json` files and matching the
+     * [backupTime] field inside the JSON — this handles both the legacy timestamp-based naming
+     * and the new `_m{replyNum}` / numeric-suffix naming.
+     * Also removes the companion ZIP and cleans up any private viewer cache.
      * Returns true if the JSON file was deleted, false if not found.
      */
     suspend fun deleteBackup(threadId: Long, backupTime: Long): Boolean = withContext(Dispatchers.IO) {
@@ -177,8 +256,8 @@ class BackupRepository @Inject constructor(
         val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
 
-        val jsonName1 = "$threadId.json"
-        val jsonName2 = "${threadId}_$backupTime.json"
+        var foundDocId: String? = null
+        var foundDisplayName: String? = null
 
         context.contentResolver.query(
             childrenUri,
@@ -190,38 +269,57 @@ class BackupRepository @Inject constructor(
         )?.use { cursor ->
             while (cursor.moveToNext()) {
                 val displayName = cursor.getString(1)
-                if (displayName != jsonName1 && displayName != jsonName2) continue
+                if (!displayName.endsWith(".json") || !isBackupFileForThread(displayName, threadId)) continue
 
                 val docId = cursor.getString(0)
                 val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                val deleted = DocumentsContract.deleteDocument(context.contentResolver, docUri)
-                if (deleted) {
-                    // Delete the companion ZIP (same base name, .zip extension).
-                    val zipName = displayName.removeSuffix(".json") + ".zip"
-                    findDocumentUri(treeUri, zipName)?.let { zipUri ->
-                        DocumentsContract.deleteDocument(context.contentResolver, zipUri)
+                val data = runCatching {
+                    context.contentResolver.openInputStream(docUri)?.use { stream ->
+                        json.decodeFromString<BackupData>(stream.bufferedReader().readText())
                     }
-                    // Clean up leftover viewer cache for this thread.
-                    viewerCacheDir(threadId).deleteRecursively()
+                }.getOrNull()
+
+                if (data?.backupTime == backupTime) {
+                    foundDocId = docId
+                    foundDisplayName = displayName
+                    break
                 }
-                return@withContext deleted
             }
         }
-        false
+
+        if (foundDocId == null) return@withContext false
+
+        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, foundDocId!!)
+        val deleted = DocumentsContract.deleteDocument(context.contentResolver, docUri)
+        if (deleted) {
+            // Delete the companion ZIP (same base name, .zip extension).
+            val zipName = foundDisplayName!!.removeSuffix(".json") + ".zip"
+            findDocumentUri(treeUri, zipName)?.let { zipUri ->
+                DocumentsContract.deleteDocument(context.contentResolver, zipUri)
+            }
+            // Clean up leftover viewer cache for this thread.
+            viewerCacheDir(threadId).deleteRecursively()
+        }
+        deleted
     }
 
     /**
-     * Read the primary [BackupData] for [threadId] from the JSON file (`{threadId}.json`).
+     * Read the most-recent [BackupData] for [threadId] by scanning all backup files whose
+     * name starts with `{threadId}` and returning the one with the greatest [BackupData.backupTime].
      * Returns null when no backup is found or the directory is not configured.
      */
     suspend fun getBackupByThreadId(threadId: Long): BackupData? = withContext(Dispatchers.IO) {
         val treeUri = backupUri.first() ?: return@withContext null
-        val jsonUri = findDocumentUri(treeUri, "$threadId.json") ?: return@withContext null
-        runCatching {
-            context.contentResolver.openInputStream(jsonUri)?.use { stream ->
-                json.decodeFromString<BackupData>(stream.bufferedReader().readText())
-            }
-        }.getOrNull()
+        findBackupsForThread(threadId, treeUri).maxByOrNull { it.backupTime }
+    }
+
+    /**
+     * Returns the [BackupData.replyNum] of the most-recent backup for [threadId], or null if no
+     * backup exists. Used by the auto-backup feature to detect changes.
+     */
+    suspend fun getLatestReplyNumForThread(threadId: Long): Int? = withContext(Dispatchers.IO) {
+        val treeUri = backupUri.first() ?: return@withContext null
+        findBackupsForThread(threadId, treeUri).maxByOrNull { it.backupTime }?.replyNum
     }
 
     /**
@@ -405,7 +503,7 @@ class BackupRepository @Inject constructor(
 
     /**
      * Finds the ZIP file for [threadId] in [treeUri].
-     * Prefers the exact name `{threadId}.zip`; falls back to any `{threadId}_*.zip`.
+     * Prefers the exact name `{threadId}.zip`; falls back to any `{threadId}[_.].*.zip`.
      */
     private fun findZipUri(treeUri: Uri, threadId: Long): Uri? {
         val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
@@ -427,12 +525,57 @@ class BackupRepository @Inject constructor(
                 )
                 when {
                     name == "$threadId.zip" -> exactMatch = docUri
-                    name.startsWith("$threadId") && name.endsWith(".zip") ->
+                    name.endsWith(".zip") && isBackupFileForThread(name.removeSuffix(".zip") + ".json", threadId) ->
                         if (prefixMatch == null) prefixMatch = docUri
                 }
             }
         }
         return exactMatch ?: prefixMatch
+    }
+
+    /**
+     * Reads all backup JSON files for [threadId] from [treeUri] and returns their parsed
+     * [BackupData] objects.  Handles all naming schemes (legacy and new).
+     */
+    private fun findBackupsForThread(threadId: Long, treeUri: Uri): List<BackupData> {
+        val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+        val result = mutableListOf<BackupData>()
+        context.contentResolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            ),
+            null, null, null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val displayName = cursor.getString(1)
+                if (!displayName.endsWith(".json") || !isBackupFileForThread(displayName, threadId)) continue
+
+                val docId = cursor.getString(0)
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                runCatching {
+                    context.contentResolver.openInputStream(docUri)?.use { stream ->
+                        json.decodeFromString<BackupData>(stream.bufferedReader().readText())
+                    }
+                }.getOrNull()?.takeIf { it.threadId == threadId }?.let { result.add(it) }
+            }
+        }
+        return result
+    }
+
+    /**
+     * Returns true when [fileName] (a `.json` filename) belongs to a backup for [threadId].
+     * Matches:
+     *   - `{threadId}.json`             (primary, non-own-post)
+     *   - `{threadId}_{anything}.json`  (legacy timestamp or new numeric suffix for non-own-post)
+     *   - `{threadId}_m{n}.json`        (primary, own-post)
+     *   - `{threadId}_m{n}_{k}.json`    (numeric duplicate, own-post)
+     */
+    private fun isBackupFileForThread(fileName: String, threadId: Long): Boolean {
+        val prefix = threadId.toString()
+        return fileName == "$prefix.json" || fileName.startsWith("${prefix}_")
     }
 
     /** Returns the viewer cache directory for [threadId] (may not yet exist). */

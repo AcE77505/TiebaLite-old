@@ -34,6 +34,10 @@
     <string name="message_backup_delete_confirm">确定要删除该备份吗？</string>
     <string name="title_backup_settings">备份设置</string>
     <string name="summary_backup_settings">备份路径、备份回复时间间隔</string>
+    <string name="title_auto_backup_own_posts">自动备份自己的贴子</string>
+    <string name="summary_auto_backup_own_posts">检测到回复数有变动时自动备份（需已有备份）</string>
+    <string name="title_duplicate_backup_action">重复备份时的操作</string>
+    <string name="title_backup_action_ask">每次询问</string>
     <string name="summary_backup_path_set">已设置</string>
     <string name="summary_backup_path_not_set">未设置</string>
     <string name="title_backup_reply_interval">备份回复时间间隔</string>
