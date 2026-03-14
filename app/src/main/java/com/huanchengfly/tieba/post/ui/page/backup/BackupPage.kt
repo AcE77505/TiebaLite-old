@@ -211,7 +211,7 @@ private fun BackupItem(
                     color = MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Text(
-                        text = stringResource(id = R.string.title_backup_forum, backup.forumName),
+                        text = backup.forumName + stringResource(id = R.string.forum),
                         modifier = Modifier.padding(vertical = 4.dp, horizontal = 12.dp),
                         style = MaterialTheme.typography.labelSmall,
                     )

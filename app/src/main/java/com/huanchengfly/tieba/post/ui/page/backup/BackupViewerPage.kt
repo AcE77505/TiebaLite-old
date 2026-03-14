@@ -124,7 +124,7 @@ private fun BackupForumHeader(backup: BackupData, imagesDir: File?) {
                     )
                 }
                 Text(
-                    text = stringResource(id = R.string.title_backup_forum, backup.forumName),
+                    text = backup.forumName + stringResource(id = R.string.forum),
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
