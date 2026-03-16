@@ -219,7 +219,7 @@ private suspend fun List<MessageInfoBean>.mapUiModel(
         val isReply = type == NotificationsType.ReplyMe
         map {
             val isFloor = it.isFloor == "1"
-            val replyUser = it.replyer!!.run {
+            val replyUser = (it.replyer ?: throw TiebaException("Missing replyer")).run {
                 ReplyUser(
                     id = id?.toLongOrNull() ?: throw TiebaException("Invalid reply user ID: $id"),
                     nameShow = nameShow ?: name ?: "",
@@ -255,7 +255,7 @@ private suspend fun List<MessageInfoBean>.mapUiModel(
                 isFloor = isFloor,
                 title = title?.emoticonString,
                 content = it.content?.emoticonString,
-                time = DateTimeUtils.fixTimestamp(it.time!!.toLong()),
+                time = DateTimeUtils.fixTimestamp(it.time?.toLongOrNull() ?: throw TiebaException("Missing time")),
                 quoteContent = quoteContent,
                 quoteUser = it.quoteUser?.run {
                     Author(
