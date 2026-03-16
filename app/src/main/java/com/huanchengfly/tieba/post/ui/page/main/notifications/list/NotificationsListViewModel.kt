@@ -221,10 +221,6 @@ private suspend fun List<MessageInfoBean>.mapUiModel(
         val isReply = type == NotificationsType.ReplyMe
         mapNotNull {
             val isFloor = it.isFloor == "1"
-            val replyer = it.replyer ?: run {
-                Log.w(TAG, "mapUiModel: skipping item with null replyer (threadId=${it.threadId})")
-                return@mapNotNull null
-            }
             val threadId = it.threadId?.toLongOrNull() ?: run {
                 Log.w(TAG, "mapUiModel: skipping item with invalid threadId=${it.threadId}")
                 return@mapNotNull null
@@ -233,21 +229,23 @@ private suspend fun List<MessageInfoBean>.mapUiModel(
                 Log.w(TAG, "mapUiModel: skipping item with invalid postId=${it.postId}")
                 return@mapNotNull null
             }
-            val time = it.time?.toLongOrNull() ?: run {
-                Log.w(TAG, "mapUiModel: skipping item with invalid time=${it.time}")
-                return@mapNotNull null
+            val time = it.time?.toLongOrNull() ?: 0L
+            val replyer = it.replyer
+            if (replyer == null) {
+                Log.w(TAG, "mapUiModel: replyer is null for item threadId=$threadId, using placeholder")
             }
-            val replyUser = replyer.run {
-                ReplyUser(
-                    id = id?.toLongOrNull() ?: run {
-                        Log.w(TAG, "mapUiModel: skipping item with invalid replyer.id=$id")
-                        return@mapNotNull null
-                    },
-                    nameShow = nameShow ?: name ?: "",
-                    avatarUrl = if (portrait.isNullOrEmpty()) null else StringUtil.getAvatarUrl(portrait),
-                    isFans = isFans == "1"
-                )
+            val replyUserId = replyer?.id?.toLongOrNull()
+            if (replyer != null && replyUserId == null) {
+                Log.w(TAG, "mapUiModel: invalid replyer.id=${replyer.id} for threadId=$threadId, using 0")
             }
+            val replyUser = ReplyUser(
+                id = replyUserId ?: 0L,
+                nameShow = replyer?.nameShow ?: replyer?.name ?: "",
+                avatarUrl = replyer?.portrait
+                    ?.takeIf { portrait -> portrait.isNotEmpty() }
+                    ?.let { portrait -> StringUtil.getAvatarUrl(portrait) },
+                isFans = replyer?.isFans == "1"
+            )
 
             // Note: conditions from NotificationsListPage, do not touch
             val title = when {
@@ -279,14 +277,17 @@ private suspend fun List<MessageInfoBean>.mapUiModel(
                 time = DateTimeUtils.fixTimestamp(time),
                 quoteContent = quoteContent,
                 quoteUser = it.quoteUser?.run {
-                    Author(
-                        id = id?.toLongOrNull() ?: run {
-                            Log.w(TAG, "mapUiModel: skipping item with invalid quoteUser.id=$id")
-                            return@mapNotNull null
-                        },
-                        name = nameShow ?: name ?: "",
-                        avatarUrl = StringUtil.getAvatarUrl(portrait)
-                    )
+                    val userId = id?.toLongOrNull()
+                    if (userId == null) {
+                        Log.w(TAG, "mapUiModel: invalid quoteUser.id=$id for threadId=$threadId, omitting quoteUser")
+                        null
+                    } else {
+                        Author(
+                            id = userId,
+                            name = nameShow ?: name ?: "",
+                            avatarUrl = StringUtil.getAvatarUrl(portrait)
+                        )
+                    }
                 },
                 quotePid = it.quotePid?.toLongOrNull(),
                 forumName = it.forumName,
