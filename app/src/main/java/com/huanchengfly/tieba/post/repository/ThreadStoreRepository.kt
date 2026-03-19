@@ -66,20 +66,21 @@ class ThreadStoreRepository @Inject constructor(
                     map {
                         ThreadStore(
                             id = it.threadId,
-                            title = it.title,
-                            forumName = it.forumName,
+                            title = it.title ?: "",
+                            forumName = it.forumName ?: "",
                             isDeleted = it.isDeleted == 1,
-                            maxPid = it.maxPid.toLongOrDefault(0),
-                            markPid = it.markPid.toLongOrDefault(0),
+                            maxPid = it.maxPid?.toLongOrDefault(0) ?: 0L,
+                            markPid = it.markPid?.toLongOrDefault(0) ?: 0L,
                             postNo = it.postNo,
                             count = it.count,
-                            author = it.author.run {
+                            // author is non-null typed but Gson can deserialize it as null; use empty placeholder if absent
+                            author = it.author?.run {
                                 Author(
-                                    id = requireNotNull(lzUid) { "Null author id of thread: ${it.threadId}" },
+                                    id = lzUid ?: 0L,
                                     name = StringUtil.getUserNameString(showBothName, name ?: "", nameShow),
                                     avatarUrl = StringUtil.getAvatarUrl(userPortrait)
                                 )
-                            }
+                            } ?: Author(id = 0L, name = "", avatarUrl = "")
                         )
                     }
                 }

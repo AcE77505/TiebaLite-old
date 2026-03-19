@@ -217,9 +217,9 @@ fun NetworkImage(
                     onTap = {
                         // Launch PhotoViewActivity now, ignore image load settings
                         val photos = photoViewDataProvider?.invoke() ?: return@detectTapGestures
-                        // bug from caller
                         if (photos.data != null && photos.data.forumName.isEmpty()) {
-                            context.toastShort(R.string.title_unknown_error)
+                            // forumName is required for the API; fall back to pic-items-only mode
+                            PhotoViewActivity.launch(context, photos.copy(data = null))
                         } else {
                             PhotoViewActivity.launch(context, photos)
                         }

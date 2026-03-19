@@ -46,9 +46,8 @@ class PhotoViewViewModel : ViewModel(), DataProvider {
 
     private fun List<PicPageBean.PicBean>.toUniquePhotoViewItems(old: List<PhotoViewItem>): List<PhotoViewItem> {
         val oldDataIds = old.mapTo(HashSet()) { it.picId }
-        return this
-            .filterNot { oldDataIds.contains(it.img.original.id) }
-            .map { it.toPhotoItem() }
+        return mapNotNull { it.toPhotoItem() }
+            .filterNot { oldDataIds.contains(it.picId) }
     }
 
     fun initData(viewData: PhotoViewData) {
@@ -72,21 +71,34 @@ class PhotoViewViewModel : ViewModel(), DataProvider {
 
                 val stateSnapshot = _state.first()
                 val picAmount = picPageBean.picAmount ?: throw TiebaException("加载列表失败, 远古坟贴?")
-                val fetchedItems = picPageBean.picList.toUniquePhotoViewItems(old = stateSnapshot.data)
-                val firstItemIndex = fetchedItems.first().overallIndex
-                val localItems =
-                    if (viewData.data.picIndex == 1) emptyList() else viewData.picItems.subList(
-                        0,
-                        viewData.data.picIndex - 1
-                    ).mapIndexed { index, item ->
-                        PhotoViewItem(
-                            item = item,
-                            overallIndex = firstItemIndex - (viewData.data.picIndex - 1 - index),
-                        )
+                val fetchedItems = picPageBean.picList.orEmpty().toUniquePhotoViewItems(old = stateSnapshot.data)
+                // When the API returns no usable items (picList absent/empty or all items null),
+                // fall back to the locally available picItems like the offline/backup mode does.
+                val items: List<PhotoViewItem>
+                val hasNext: Boolean
+                val hasPrev: Boolean
+                if (fetchedItems.isEmpty()) {
+                    items = viewData.picItems.mapIndexed { index, item ->
+                        PhotoViewItem(item = item, overallIndex = index + 1)
                     }
-                val items = localItems + fetchedItems
-                val hasNext = items.last().overallIndex < picAmount
-                val hasPrev = items.first().overallIndex > 1
+                    hasNext = false
+                    hasPrev = false
+                } else {
+                    val firstItemIndex = fetchedItems.first().overallIndex
+                    val localItems =
+                        if (viewData.data.picIndex == 1) emptyList() else viewData.picItems.subList(
+                            0,
+                            viewData.data.picIndex - 1
+                        ).mapIndexed { index, item ->
+                            PhotoViewItem(
+                                item = item,
+                                overallIndex = firstItemIndex - (viewData.data.picIndex - 1 - index),
+                            )
+                        }
+                    items = localItems + fetchedItems
+                    hasNext = items.last().overallIndex < picAmount
+                    hasPrev = items.first().overallIndex > 1
+                }
                 val initialIndex: Int? = items
                     .indexOfFirst { it.picId == viewData.data.picId }
                     .takeIf { it != -1 }
@@ -140,8 +152,8 @@ class PhotoViewViewModel : ViewModel(), DataProvider {
                     .retryWhen { cause, attempt ->  cause !is TiebaApiException && attempt < 3 }
                     .firstOrThrow()
 
-                val hasPrev = picPageBean.picList.first().overAllIndex.toInt() > 1
-                val uniqueItems = picPageBean.picList.toUniquePhotoViewItems(uiState.data)
+                val hasPrev = picPageBean.picList.orEmpty().firstOrNull()?.overAllIndex?.toIntOrNull()?.let { it > 1 } ?: false
+                val uniqueItems = picPageBean.picList.orEmpty().toUniquePhotoViewItems(uiState.data)
                 val newItems = (uniqueItems + uiState.data).toImmutableList()
 
                 withContext(Dispatchers.Main.immediate) {
@@ -168,9 +180,9 @@ class PhotoViewViewModel : ViewModel(), DataProvider {
                 .retryWhen { cause, attempt ->  cause !is TiebaApiException && attempt < 3 }
                 .firstOrThrow()
 
-            val newData = picPageBean.picList
+            val newData = picPageBean.picList.orEmpty()
             val picAmount = picPageBean.picAmount ?: throw TiebaException("加载列表失败, 远古坟贴?")
-            val hasNext = newData.last().overAllIndex.toInt() < picAmount
+            val hasNext = newData.lastOrNull()?.overAllIndex?.toIntOrNull()?.let { it < picAmount } ?: false
             val uniqueItems = newData.toUniquePhotoViewItems(old = uiState.data)
             val newItems = (uiState.data + uniqueItems).toImmutableList()
 
@@ -202,18 +214,20 @@ class PhotoViewViewModel : ViewModel(), DataProvider {
             )
         }
 
-        private fun PicPageBean.PicBean.toPhotoItem(): PhotoViewItem {
-            val originSize = img.original.size.toIntOrNull() ?: 0 // Bytes
+        private fun PicPageBean.PicBean.toPhotoItem(): PhotoViewItem? {
+            val imgBean = img ?: return null
+            val original = imgBean.original ?: return null
+            val originSize = original.size.toIntOrNull() ?: 0 // Bytes
 
             return PhotoViewItem(
-                picId = img.original.id,
-                originUrl = img.bestQualitySrc,
+                picId = original.id,
+                originUrl = imgBean.bestQualitySrc,
                 overallIndex = overAllIndex.toInt(),
                 postId = postId?.toLongOrNull(),
                 type = when {
-                    img.isGif -> ItemType.PHOTO
+                    imgBean.isGif -> ItemType.PHOTO
 
-                    img.original.isLongPic() || originSize >= 1024 * 1024 * 2 -> ItemType.SUBSAMPLING
+                    original.isLongPic() || originSize >= 1024 * 1024 * 2 -> ItemType.SUBSAMPLING
 
                     else -> ItemType.PHOTO
                 }
