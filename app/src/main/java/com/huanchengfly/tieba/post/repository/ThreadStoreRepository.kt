@@ -73,13 +73,14 @@ class ThreadStoreRepository @Inject constructor(
                             markPid = it.markPid.toLongOrDefault(0),
                             postNo = it.postNo,
                             count = it.count,
-                            author = it.author.run {
+                            // author is non-null typed but Gson can deserialize it as null; use empty placeholder if absent
+                            author = it.author?.run {
                                 Author(
-                                    id = requireNotNull(lzUid) { "Null author id of thread: ${it.threadId}" },
+                                    id = lzUid ?: 0L,
                                     name = StringUtil.getUserNameString(showBothName, name ?: "", nameShow),
                                     avatarUrl = StringUtil.getAvatarUrl(userPortrait)
                                 )
-                            }
+                            } ?: Author(id = 0L, name = "", avatarUrl = "")
                         )
                     }
                 }

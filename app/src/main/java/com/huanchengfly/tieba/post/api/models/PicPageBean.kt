@@ -13,7 +13,7 @@ data class PicPageBean(
     @SerializedName("pic_amount")
     val picAmount: Int?, // 远古坟贴: Null
     @SerializedName("pic_list")
-    val picList: List<PicBean>,
+    val picList: List<PicBean>? = null,
 ) : BaseBean() {
     data class ForumBean(
         val name: String,
@@ -32,7 +32,7 @@ data class PicPageBean(
         @SerializedName("is_blocked_pic")
         @JsonAdapter(StringToBooleanAdapter::class)
         val isBlockedPic: Boolean,
-        val img: ImgBean,
+        val img: ImgBean?,
         @SerializedName("post_id")
         val postId: String?,
         @SerializedName("user_id")
@@ -42,7 +42,7 @@ data class PicPageBean(
     )
 
     data class ImgBean(
-        val original: ImgInfoBean,
+        val original: ImgInfoBean?,
         val medium: ImgInfoBean?,
         val screen: ImgInfoBean?,
     )
@@ -69,11 +69,11 @@ fun PicPageBean.ImgInfoBean.isLongPic(): Boolean {
 }
 
 val PicPageBean.ImgBean.isGif: Boolean
-    get() = original.format == "2"
+    get() = original?.format == "2"
 
 val PicPageBean.ImgBean.bestQualitySrc: String
-    get() = with(this.original) {
-        val size = original.size.toLongOrNull() ?: 0
+    get() = with(this.original ?: return "") {
+        val size = this.size.toLongOrNull() ?: 0
         when {
             isGif -> waterUrl
 
